@@ -1,0 +1,273 @@
+---
+title: "LCA com 2 subgrupos - Treino e teste"
+
+output:
+  html_document: default
+  pdf_document: default
+---
+
+
+# Carregamento dos pacotes que serão utilizados  
+  
+```{r}
+pacman::p_load(poLCA, dplyr, rstatix, pROC, table1,tinytex)
+```
+  
+  
+# Leitura do banco de dados
+  
+```{r}
+dados <- read.csv("Banco.csv", sep = ";", dec = ".")
+```
+
+glimpse(dados)
+
+
+```{r}
+dados$Rcest_cat <- as.factor(dados$Rcest_cat)
+dados$CC <- as.numeric(dados$CC)
+dados$CC_cat <- as.factor(dados$CC_cat)
+dados$IC_cat <- as.factor(dados$IC_cat)
+dados$ABSI_cat <- as.factor(dados$ABSI_cat)
+dados$IC <- as.numeric(dados$IC)
+
+```
+
+
+
+  
+## Modificando as categorias para 1 e 2 (necessário no pacote poLCA)  
+```{r}
+dados12 <- dados %>% 
+  mutate_at(c("Rcest_cat","CC_cat", "ABSI_cat"),
+            ~recode(., `0`=1, `1`=2, .default = NaN))
+```
+
+
+
+  
+## Criando bancos por gênero 
+```{r}
+dfH <- dados12 %>% subset(Sexo == "Masculino")
+dfM <- dados12 %>% subset(Sexo == "Feminino")
+```
+  
+## Subdivisão dos 2 bancos em treino e teste  
+```{r}
+set.seed(1105)
+
+# Homens 
+dfH_treino <- sample_frac(dfH, 0.5)
+sid <- as.numeric(rownames(dfH_treino))
+dfH_teste <- dfH[-sid,]
+
+# Mulheres 
+dfM_treino <- sample_frac(dfM, 0.5)
+sid <- as.numeric(rownames(dfM_treino))
+dfM_teste <- dfH[-sid,]
+```
+  
+### Unindo os bancos de treino  
+```{r}
+dfs_treino <- rbind.data.frame(dfH_treino, dfM_treino)
+```
+  
+  
+# Criação da variável latente  
+  
+## Criação da fórmula
+
+```{r}
+f <- cbind(Rcest_cat, CC_cat, ABSI_cat) ~ 1
+```
+
+
+## Modelo com duas variáveis latentes (nos bancos de treino)
+
+```{r}
+lc2 <- poLCA(f, dfs_treino, nclass = 2, nrep = 10)
+dfs_treino <- dfs_treino[complete.cases(dfs_treino[c(5,7,14)]), ]
+dfs_treino$prev <- as.factor(lc2$predclass)
+```
+
+```{r}
+poLCA.entropy(lc2)
+
+nume.E <- -sum(lc2$posterior * log(lc2$posterior))
+##Denominator (n*log(K)): ## n is a sample size, and K is a number of class
+deno.E <- 459*log(2)
+##Relative Entropy
+Entro <- 1-(nume.E/deno.E)
+Entro
+```
+
+
+# Verificação da sensibilidade e especificidade no banco de teste  
+  
+## Obtenção das classes no banco de teste  
+  
+```{r}
+dfH_teste <- dfH_teste[complete.cases(dfH_teste[c(5,7,14)]), ]
+lc2H.posterior <- poLCA.posterior(lc2, dfH_teste[,c(5,7,14)])
+dfH_teste <- cbind(dfH_teste, prev = as.factor(apply(lc2H.posterior, 1, FUN=which.max)))
+```
+
+```{r}
+dfM_teste <- dfM_teste[complete.cases(dfM_teste[c(5,7,14)]), ]
+lc2M.posterior <- poLCA.posterior(lc2, dfM_teste[,c(5,7,14)])
+dfM_teste <- cbind(dfM_teste, prev = as.factor(apply(lc2M.posterior, 1, FUN=which.max)))
+```
+
+  
+## Obtenção do ponto de corte para o índice de conicidade
+  
+```{r}
+curvaH <- roc(response = dfH_teste$prev, predictor = dfH_teste$IC)
+plot.roc(curvaH, print.thres = T, print.auc = T)
+```
+
+```{r}
+curvaM <- roc(response = dfM_teste$prev, predictor = dfM_teste$IC)
+plot.roc(curvaM, print.thres = T, print.auc = T)
+```
+
+  
+# Análises descritivas  
+  
+## Homens
+```{r}
+summary(dfH_teste$prev)
+summary(dfH_treino$prev)
+
+dfH_teste %>% group_by(prev) %>% get_summary_stats(IC)
+```
+
+
+```{r}
+A = matrix(nrow = 1, ncol = 8,
+           dimnames = list("Homens",
+                           c("Cutoff","AUC","SENS","SPE",
+                             "VPP","VPN","LR+","LR-")))
+
+Th = 1.275
+
+classificacoes <- ifelse(dfH_teste$IC >= Th, 2, 1)
+
+tab_confusao <- table(dfH_teste$prev, classificacoes)
+
+A[1, 1] = Th
+A[1, 2] = auc(dfH_teste$prev, dfH_teste$IC)
+sensib = tab_confusao[2,2]/(sum(tab_confusao[2,]))
+A[1, 3] = sensib
+especif = tab_confusao[1,1]/(sum(tab_confusao[1,]))
+A[1, 4] = especif
+A[1, 5] = tab_confusao[2,2]/(sum(tab_confusao[,2]))
+A[1, 6] = tab_confusao[1,1]/(sum(tab_confusao[,1]))
+A[1, 7] = sensib/(1-especif)
+A[1, 8] = (1-sensib)/especif
+
+
+ReportM1 <- as.data.frame(A)
+# ReportM1 <- rbind(ReportM1, A)
+```
+
+```{r}
+reportROC::reportROC(dfH_teste$prev, dfH_teste$IC)
+```
+
+## Mulheres
+```{r}
+summary(dfM_teste$prev)
+summary(dfM_treino$prev)
+
+dfM_teste %>% group_by(prev) %>% get_summary_stats(IC)
+```
+
+
+```{r}
+A = matrix(nrow = 1, ncol = 8,
+           dimnames = list("Mulheres",
+                           c("Cutoff","AUC","SENS","SPE",
+                             "VPP","VPN","LR+","LR-")))
+
+Th = 1.285
+
+classificacoes <- ifelse(dfM_teste$IC >= Th, 2, 1)
+
+tab_confusao <- table(dfM_teste$prev, classificacoes)
+
+A[1, 1] = Th
+A[1, 2] = auc(dfM_teste$prev, dfM_teste$IC)
+sensib = tab_confusao[2,2]/(sum(tab_confusao[2,]))
+A[1, 3] = sensib
+especif = tab_confusao[1,1]/(sum(tab_confusao[1,]))
+A[1, 4] = especif
+A[1, 5] = tab_confusao[2,2]/(sum(tab_confusao[,2]))
+A[1, 6] = tab_confusao[1,1]/(sum(tab_confusao[,1]))
+A[1, 7] = sensib/(1-especif)
+A[1, 8] = (1-sensib)/especif
+
+
+# ReportM1 <- as.data.frame(A)
+ReportM1 <- rbind(ReportM1, A)
+```
+
+```{r}
+reportROC::reportROC(dfM_teste$prev, dfM_teste$IC)
+```
+
+
+
+
+```{r}
+kableExtra::kable(ReportM1)
+write.table(ReportM1, "clipboard", sep = "\t")
+```
+
+
+
+
+
+```{r}
+dados[c(3,5,7,14)] <- lapply(dados[c(3,5,7,14)], factor)
+
+tabela <- table1::table1(~ Rcest_cat+CC_cat+ABSI_cat
+                         |Sexo, data = dados)
+tabela
+# write.table(tabela, "clipboard", sep = "\t")
+```
+
+### Unindo os bancos de teste  
+```{r}
+dfs_teste <- rbind.data.frame(dfH_teste, dfM_teste)
+```
+  
+
+  
+### Unindo treino + teste  
+```{r}
+dfs_prev <- rbind.data.frame(dfs_treino, dfs_teste)
+```
+  
+  
+
+## Médias pela variável latente
+```{r}
+dfs_prev$Grupo <- paste(dfs_prev$Sexo)
+dfs_prev[c(2,5,7,14)] <- lapply(dfs_prev[c(2,5,7,14)], factor)
+
+tabela3 <- table1::table1(~ IC + Rcest_cat+CC_cat+ABSI_cat
+                         | factor(Grupo) + prev, data = dfs_prev,
+                         render.continuous=c(.="Mean (SD)", .="Median [IQR]"))
+tabela3
+# write.table(tabela3, "clipboard", sep = "\t")
+```
+
+
+```{r}
+dfs_prev %>% group_by(Sexo, prev) %>% get_summary_stats(IC)
+```
+
+
+<br><br>
+  
